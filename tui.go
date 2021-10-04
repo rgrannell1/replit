@@ -46,6 +46,10 @@ func NewUI() *TUI {
 	tui.helpBar = NewHelpbar(&tui)
 	tui.stdoutViewer = NewStdoutViewer(&tui)
 
+	return &tui
+}
+
+func (tui *TUI) Start() {
 	grid := tview.NewGrid().
 		SetRows(1, 0, 1, 1).
 		SetColumns(0).
@@ -57,8 +61,6 @@ func NewUI() *TUI {
 	if err := tui.app.SetRoot(grid, true).SetFocus(grid).Run(); err != nil {
 		fmt.Printf("RL: Application crashed! %v", err)
 	}
-
-	return &tui
 }
 
 func NewHelpbar(tui *TUI) *tview.TextView {

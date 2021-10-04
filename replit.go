@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,10 +46,10 @@ func ListDirectory(dir string) (*[]string, error) {
 }
 
 // Launch an entr process and intercept output.
-func LaunchEntr(language string, targetFile *os.File, files *[]string) *exec.Cmd {
+func LaunchEntr(args *ReplitArgs, tui *TUI, files *[]string) *exec.Cmd {
 	watched := []byte(strings.Join(*files, "\n"))
 
-	cmd := exec.Command("entr", "-s", language+" '"+targetFile.Name()+"'")
+	cmd := exec.Command("entr", "-s", args.Lang+" '"+args.EditorFile.File.Name()+"'")
 
 	var outputBuffer bytes.Buffer
 
@@ -72,7 +71,7 @@ func ValidateLanguage(language string) error {
 }
 
 // Create and open a temporary file
-func TargetFile(file string, lang string) (*os.File, error) {
+func TargetFile(file string, lang string) (*EditorFile, error) {
 	if len(file) == 0 {
 		tgt, err := ioutil.TempFile("/tmp", "replit")
 		if err != nil {
@@ -81,10 +80,21 @@ func TargetFile(file string, lang string) (*os.File, error) {
 
 		tgt.WriteString("#!/usr/bin/env " + lang + "\n")
 
-		return tgt, nil
+		return &EditorFile{
+			true,
+			tgt,
+		}, nil
 	}
 
-	return os.Open(file)
+	conn, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+
+	return &EditorFile{
+		false,
+		conn,
+	}, nil
 }
 
 // Check whether a command exists
@@ -112,24 +122,22 @@ func GetEditor() (string, error) {
 }
 
 // Launch the user's visual-editor, falling back to VSCode as a default.
-func LaunchEditor(file *os.File, editorChan chan *exec.Cmd) {
+func LaunchEditor(editorChan chan *exec.Cmd, file *EditorFile) {
 	editor, _ := GetEditor()
-	cmd := exec.Command(editor, file.Name())
-
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd := exec.Command(editor, file.File.Name())
 
 	cmd.Start()
 	editorChan <- cmd
 }
 
-func StartEntr(file string, lang string, targetFile *os.File, dpath string, entrChan chan *exec.Cmd) error {
-	isTmpFile := len(file) == 0
+func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd) error {
+	targetFile := args.EditorFile
+	dpath := args.Dpath
 
-	if isTmpFile {
+	if targetFile.IsTempFile {
 		// launch entr against a temporary file
 		go func(cmdChan chan *exec.Cmd) {
-			cmdChan <- LaunchEntr(lang, targetFile, &[]string{targetFile.Name()})
+			cmdChan <- LaunchEntr(args, tui, &[]string{targetFile.File.Name()})
 		}(entrChan)
 	} else {
 		files, err := ListDirectory(dpath)
@@ -139,66 +147,88 @@ func StartEntr(file string, lang string, targetFile *os.File, dpath string, entr
 		}
 
 		go func(cmdChan chan *exec.Cmd) {
-			cmdChan <- LaunchEntr(lang, targetFile, files)
+			cmdChan <- LaunchEntr(args, tui, files)
 		}(entrChan)
 	}
 
 	return nil
 }
 
-func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, isTmpFile bool, targetFile *os.File) {
+func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
 	var doneGroup sync.WaitGroup
 	doneGroup.Add(3)
 
+	// kill entr command
 	go func() {
 		defer doneGroup.Done()
 
-		// kill entr command
 		entr := <-entrChan
 		entr.Process.Kill()
 	}()
 
+	// kill editor
 	go func() {
 		defer doneGroup.Done()
 
-		// kill editor
 		editor := <-editorChan
 		editor.Process.Kill()
 	}()
 
+	// remove temporary file
 	go func() {
-		// remove temporary file
 		defer doneGroup.Done()
 
-		if isTmpFile {
-			name := targetFile.Name()
+		if targetFile.IsTempFile {
+			name := targetFile.File.Name()
 			os.Remove(name)
 		}
 	}()
+
+	doneGroup.Wait()
 }
 
-// Core application
-func ReplIt(opts docopt.Opts) int {
+type EditorFile struct {
+	IsTempFile bool
+	File       *os.File
+}
+
+func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
+	// terminate when a signal is received; wrap up tidily
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan bool, 1)
+	go func(done chan bool) {
+		<-sigs
+		done <- true
+	}(done)
+
+	<-done
+
+	StopReplit(entrChan, editorChan, targetFile)
+}
+
+type ReplitArgs struct {
+	EditorFile *EditorFile
+	Dpath      string
+	Lang       string
+}
+
+func ReadArgs(opts docopt.Opts) (ReplitArgs, int) {
 	dir, _ := opts.String("--directory")
 	if len(dir) == 0 {
 		dir, _ = os.Getwd()
 	}
 
-	done := make(chan bool, 1)
-
-	tui := NewUI()
-	tui.SetTheme()
-
 	dpath, err := filepath.Abs(dir)
 	if err != nil {
-		log.Fatal("replit: failed to resolve directory path")
-		return 1
+		println("replit: failed to resolve directory path")
+		return ReplitArgs{}, 1
 	}
 
 	lang, err := opts.String("<lang>")
 	if err != nil {
-		log.Fatal("replit: could not read language")
-		return 1
+		println("replit: could not read language")
+		return ReplitArgs{}, 1
 	}
 
 	// check the editor is present; ignore the value for the moment
@@ -210,8 +240,7 @@ func ReplIt(opts docopt.Opts) int {
 
 	langErr := ValidateLanguage(lang)
 	if langErr != nil {
-		fmt.Errorf("replit: %v", langErr)
-		return 1
+		panic(langErr)
 	}
 
 	file, _ := opts.String("<file>")
@@ -221,28 +250,37 @@ func ReplIt(opts docopt.Opts) int {
 		panic(err)
 	}
 
+	return ReplitArgs{
+		targetFile,
+		dpath,
+		lang,
+	}, -1
+}
+
+// Core application
+func ReplIt(opts docopt.Opts) int {
+	tui := NewUI()
+	tui.SetTheme()
+
+	go func(tui *TUI) {
+		tui.Start()
+	}(tui)
+
+	args, exitCode := ReadArgs(opts)
+
+	if exitCode >= 0 {
+		return exitCode
+	}
+
 	editorChan := make(chan *exec.Cmd)
 
 	// launch an editor asyncronously
-	go LaunchEditor(targetFile, editorChan)
-
-	isTmpFile := len(file) == 0
+	go LaunchEditor(editorChan, args.EditorFile)
 
 	entrChan := make(chan *exec.Cmd)
-	go StartEntr(file, lang, targetFile, dpath, entrChan)
+	go StartEntr(&args, tui, entrChan)
 
-	// terminate when a signal is received; wrap up tidily
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	go func(done chan bool) {
-		<-sigs
-		done <- true
-	}(done)
-
-	<-done
-
-	StopReplit(entrChan, editorChan, isTmpFile, targetFile)
+	ExitHandler(entrChan, editorChan, args.EditorFile)
 
 	return 0
 }
