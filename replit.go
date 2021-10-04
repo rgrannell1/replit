@@ -227,6 +227,7 @@ func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile 
 	os.Exit(0)
 }
 
+// Read docopt arguments and return parsed, provided parameters
 func ReadArgs(opts docopt.Opts) (ReplitArgs, int) {
 	dir, _ := opts.String("--directory")
 	if len(dir) == 0 {

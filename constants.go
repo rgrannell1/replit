@@ -48,3 +48,4 @@ const DONT_FOCUS = false
 
 const HELP_TEXT = "Help"
 const HEADER_TEXT = "Replit"
+const STDOUT_TEXT = "Waiting for program execution...\n"
