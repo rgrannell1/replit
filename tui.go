@@ -12,6 +12,7 @@ type TUI struct {
 	app          *tview.Application
 	stdoutViewer *tview.TextView
 	helpBar      *tview.TextView
+	done         bool
 }
 
 // Set initial theme overrides, so tview uses default
@@ -50,6 +51,18 @@ func NewUI() *TUI {
 	tui.stdoutViewer = NewStdoutViewer(&tui)
 
 	return &tui
+}
+
+// Redraw when file-changes are detected
+func (tui *TUI) Redraw(changeChan chan bool) {
+	for {
+		if tui.done {
+			return
+		}
+
+		<-changeChan
+		tui.app.Draw()
+	}
 }
 
 // Arrange TUI components into a grid

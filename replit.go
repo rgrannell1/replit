@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/docopt/docopt-go"
 	"github.com/rivo/tview"
@@ -67,13 +66,6 @@ func LaunchEntr(args *ReplitArgs, tui *TUI, files *[]string) *exec.Cmd {
 	cmd.Stdin = bytes.NewBuffer(watched)
 	cmd.Stdout = tview.ANSIWriter(tui.stdoutViewer)
 	cmd.Stderr = tview.ANSIWriter(tui.stdoutViewer)
-
-	go func() {
-		for {
-			time.Sleep(100 * time.Millisecond)
-			tui.app.Draw()
-		}
-	}()
 
 	cmd.Start()
 	return cmd
@@ -149,36 +141,57 @@ func LaunchEditor(editorChan chan *exec.Cmd, file *EditorFile) {
 }
 
 // Start entr
-func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd) error {
+func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd, changeChan chan bool) error {
 	targetFile := args.EditorFile
 	dpath := args.Dpath
 
+	var files *[]string
+
 	if targetFile.IsTempFile {
-		// launch entr against a temporary file; only watch a single file
-
-		go func(cmdChan chan *exec.Cmd) {
-			files := &[]string{targetFile.File.Name()}
-			cmdChan <- LaunchEntr(args, tui, files)
-		}(entrChan)
+		files = &[]string{targetFile.File.Name()}
 	} else {
-		// launch entr for a provided directory and file
-
-		files, err := ListDirectory(dpath)
+		var err error
+		files, err = ListDirectory(dpath)
 
 		if err != nil {
 			return err
 		}
-
-		go func(cmdChan chan *exec.Cmd) {
-			cmdChan <- LaunchEntr(args, tui, files)
-		}(entrChan)
 	}
+
+	go func(cmdChan chan *exec.Cmd) {
+		go ObserveChanges(changeChan, files)
+		cmdChan <- LaunchEntr(args, tui, files)
+	}(entrChan)
 
 	return nil
 }
 
-// Stop replit; terminate entr, editor, and remove the temporary file
-func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
+// Send a signal each time a file is changed according to entr.
+func ObserveChanges(changeChan chan bool, files *[]string) {
+	watched := []byte(strings.Join(*files, "\n"))
+
+	for {
+		cmd := exec.Command("entr", "-zps", "echo hi")
+		cmd.Stdin = bytes.NewBuffer(watched)
+		cmd.Run()
+
+		changeChan <- true
+	}
+}
+
+// Teriminate program when an exit signal is received, and tidy up termporary files and processes
+func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, tui *TUI, targetFile *EditorFile) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan bool, 1)
+	go func(done chan bool) {
+		<-sigs
+		done <- true
+	}(done)
+
+	<-done
+	tui.done = true
+
 	var doneGroup sync.WaitGroup
 	doneGroup.Add(3)
 
@@ -209,21 +222,6 @@ func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *
 	}()
 
 	doneGroup.Wait()
-}
-
-// Teriminate program when an exit signal is received, and tidy up termporary files and processes
-func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	done := make(chan bool, 1)
-	go func(done chan bool) {
-		<-sigs
-		done <- true
-	}(done)
-
-	<-done
-
-	StopReplit(entrChan, editorChan, targetFile)
 	os.Exit(0)
 }
 
@@ -294,9 +292,12 @@ func ReplIt(opts docopt.Opts) int {
 
 	// start entr; read the file (and optionally a directory) and live-reload
 	entrChan := make(chan *exec.Cmd)
-	go StartEntr(&args, tui, entrChan)
+	changeChan := make(chan bool)
+
+	go tui.Redraw(changeChan)
+	go StartEntr(&args, tui, entrChan, changeChan)
 
 	// Teriminate program when an exit signal is received, and tidy up termporary files and processes
-	ExitHandler(entrChan, editorChan, args.EditorFile)
+	ExitHandler(entrChan, editorChan, tui, args.EditorFile)
 	return 0
 }
