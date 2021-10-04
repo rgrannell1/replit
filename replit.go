@@ -171,7 +171,7 @@ func ObserveChanges(changeChan chan bool, files *[]string) {
 	watched := []byte(strings.Join(*files, "\n"))
 
 	for {
-		cmd := exec.Command("entr", "-zps", "echo hi")
+		cmd := exec.Command("entr", "-zps", "echo 0")
 		cmd.Stdin = bytes.NewBuffer(watched)
 		cmd.Run()
 
@@ -272,18 +272,18 @@ func ReadArgs(opts docopt.Opts) (ReplitArgs, int) {
 
 // Core application
 func ReplIt(opts docopt.Opts) int {
-	tui := NewUI()
-	tui.SetTheme()
-
-	go func(tui *TUI) {
-		tui.Start()
-	}(tui)
-
 	// read and validate arguments
 	args, exitCode := ReadArgs(opts)
 	if exitCode >= 0 {
 		return exitCode
 	}
+
+	tui := NewUI(&args)
+	tui.SetTheme()
+
+	go func(tui *TUI) {
+		tui.Start()
+	}(tui)
 
 	editorChan := make(chan *exec.Cmd)
 

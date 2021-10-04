@@ -47,5 +47,5 @@ const FOCUS = true
 const DONT_FOCUS = false
 
 const HELP_TEXT = "Help"
-const HEADER_TEXT = "Replit"
+const HEADER_TEXT = "[red]Replit[reset]"
 const STDOUT_TEXT = "Waiting for program execution...\n"

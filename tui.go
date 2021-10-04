@@ -41,13 +41,13 @@ func NewStdoutViewer(tui *TUI) *tview.TextView {
 }
 
 // Construct all UI components
-func NewUI() *TUI {
+func NewUI(args *ReplitArgs) *TUI {
 	tui := TUI{}
 	tui.SetTheme()
 
 	tui.app = NewApplication()
 	tui.header = NewHeader(&tui)
-	tui.helpBar = NewHelpbar(&tui)
+	tui.helpBar = NewHelpbar(&tui, args)
 	tui.stdoutViewer = NewStdoutViewer(&tui)
 
 	return &tui
@@ -86,8 +86,8 @@ func (tui *TUI) Start() {
 }
 
 // Show help-text to help user's use Replit
-func NewHelpbar(tui *TUI) *tview.TextView {
+func NewHelpbar(tui *TUI, args *ReplitArgs) *tview.TextView {
 	return tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(HELP_TEXT)
+		SetText("Edit " + args.EditorFile.File.Name() + " & save to run with " + args.Lang)
 }
