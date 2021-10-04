@@ -12,9 +12,22 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/docopt/docopt-go"
+	"github.com/rivo/tview"
 )
+
+type EditorFile struct {
+	IsTempFile bool
+	File       *os.File
+}
+
+type ReplitArgs struct {
+	EditorFile *EditorFile
+	Dpath      string
+	Lang       string
+}
 
 // List all files in directory
 func ListDirectory(dir string) (*[]string, error) {
@@ -49,13 +62,18 @@ func ListDirectory(dir string) (*[]string, error) {
 func LaunchEntr(args *ReplitArgs, tui *TUI, files *[]string) *exec.Cmd {
 	watched := []byte(strings.Join(*files, "\n"))
 
-	cmd := exec.Command("entr", "-s", args.Lang+" '"+args.EditorFile.File.Name()+"'")
-
-	var outputBuffer bytes.Buffer
+	cmd := exec.Command("entr", "-c", "-s", args.Lang+" '"+args.EditorFile.File.Name()+"'")
 
 	cmd.Stdin = bytes.NewBuffer(watched)
-	cmd.Stdout = &outputBuffer
-	cmd.Stderr = &outputBuffer
+	cmd.Stdout = tview.ANSIWriter(tui.stdoutViewer)
+	cmd.Stderr = tview.ANSIWriter(tui.stdoutViewer)
+
+	go func() {
+		for {
+			time.Sleep(100 * time.Millisecond)
+			tui.app.Draw()
+		}
+	}()
 
 	cmd.Start()
 	return cmd
@@ -130,16 +148,21 @@ func LaunchEditor(editorChan chan *exec.Cmd, file *EditorFile) {
 	editorChan <- cmd
 }
 
+// Start entr
 func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd) error {
 	targetFile := args.EditorFile
 	dpath := args.Dpath
 
 	if targetFile.IsTempFile {
-		// launch entr against a temporary file
+		// launch entr against a temporary file; only watch a single file
+
 		go func(cmdChan chan *exec.Cmd) {
-			cmdChan <- LaunchEntr(args, tui, &[]string{targetFile.File.Name()})
+			files := &[]string{targetFile.File.Name()}
+			cmdChan <- LaunchEntr(args, tui, files)
 		}(entrChan)
 	} else {
+		// launch entr for a provided directory and file
+
 		files, err := ListDirectory(dpath)
 
 		if err != nil {
@@ -154,6 +177,7 @@ func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd) error {
 	return nil
 }
 
+// Stop replit; terminate entr, editor, and remove the temporary file
 func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
 	var doneGroup sync.WaitGroup
 	doneGroup.Add(3)
@@ -187,13 +211,8 @@ func StopReplit(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *
 	doneGroup.Wait()
 }
 
-type EditorFile struct {
-	IsTempFile bool
-	File       *os.File
-}
-
+// Teriminate program when an exit signal is received, and tidy up termporary files and processes
 func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile *EditorFile) {
-	// terminate when a signal is received; wrap up tidily
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan bool, 1)
@@ -205,12 +224,7 @@ func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, targetFile 
 	<-done
 
 	StopReplit(entrChan, editorChan, targetFile)
-}
-
-type ReplitArgs struct {
-	EditorFile *EditorFile
-	Dpath      string
-	Lang       string
+	os.Exit(0)
 }
 
 func ReadArgs(opts docopt.Opts) (ReplitArgs, int) {
@@ -266,8 +280,8 @@ func ReplIt(opts docopt.Opts) int {
 		tui.Start()
 	}(tui)
 
+	// read and validate arguments
 	args, exitCode := ReadArgs(opts)
-
 	if exitCode >= 0 {
 		return exitCode
 	}
@@ -277,10 +291,11 @@ func ReplIt(opts docopt.Opts) int {
 	// launch an editor asyncronously
 	go LaunchEditor(editorChan, args.EditorFile)
 
+	// start entr; read the file (and optionally a directory) and live-reload
 	entrChan := make(chan *exec.Cmd)
 	go StartEntr(&args, tui, entrChan)
 
+	// Teriminate program when an exit signal is received, and tidy up termporary files and processes
 	ExitHandler(entrChan, editorChan, args.EditorFile)
-
 	return 0
 }
