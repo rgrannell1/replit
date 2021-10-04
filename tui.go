@@ -89,5 +89,5 @@ func (tui *TUI) Start() {
 func NewHelpbar(tui *TUI, args *ReplitArgs) *tview.TextView {
 	return tview.NewTextView().
 		SetDynamicColors(true).
-		SetText("Edit " + args.EditorFile.File.Name() + " & save to run with " + args.Lang)
+		SetText("Edit [red]" + args.EditorFile.File.Name() + "[reset] & save to run with [red]" + args.Lang + "[reset]")
 }
