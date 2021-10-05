@@ -2,22 +2,22 @@ package main
 
 const Usage = `
 Usage:
-	replit <lang>
-	replit [-d <dir>|--directory <dir>] <lang> [<file>]
+  replit <lang>
+  replit [-d <dir>|--directory <dir>] <lang> [<file>]
 
 Description:
-	replit launches
+  replit launches
 
 Environmental Variables:
-	$VISUAL    The visual-code editor.
+  $VISUAL    The visual-code editor.
 
 Arguments:
-	<lang>    a language executable (e.g python3, node) to launch an interactive runner.
-	<file>    optional. If selected, entr will run against this file.
+  <lang>    a language executable (e.g python3, node) to launch an interactive runner.
+  <file>    optional. If selected, entr will run against this file.
 
 Options:
   -d <dir>, --directory <dir>    the directory to monitor for changes
-	`
+`
 
 const COMMAND_AND_LINE_ROWS = 2
 const STDOUT_ROWS = 0
