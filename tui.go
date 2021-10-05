@@ -86,7 +86,7 @@ func (tui *TUI) Grid() *tview.Grid {
 	return tview.NewGrid().
 		SetBorders(false).
 		SetRows(1, 0, 1, 1).
-		SetColumns(0).
+		SetColumns(-8, -1, -1).
 		AddItem(tui.header, ROW_0, COL_0, ROWSPAN_1, COLSPAN_1, MINWIDTH_0, MINHEIGHT_0, true).
 		AddItem(tui.runCountViewer, ROW_0, COL_1, ROWSPAN_1, COLSPAN_1, MINWIDTH_0, MINHEIGHT_0, true).
 		AddItem(tui.runSecondsViewer, ROW_0, COL_2, ROWSPAN_1, COLSPAN_1, MINWIDTH_0, MINHEIGHT_0, true).
