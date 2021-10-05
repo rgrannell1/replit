@@ -141,8 +141,39 @@ func LaunchEditor(editorChan chan<- *exec.Cmd, file *EditorFile) {
 	editorChan <- cmd
 }
 
+type FileWatcher struct {
+	Done  bool
+	Files *[]string
+}
+
+func (watch *FileWatcher) Stop() {
+	watch.Done = true
+}
+
+func (watch *FileWatcher) Stdin() *bytes.Buffer {
+	byteStr := []byte(strings.Join(*watch.Files, "\n"))
+
+	return bytes.NewBuffer(byteStr)
+}
+
+func (watch *FileWatcher) Start(changeChan chan bool) {
+	go func() {
+		for {
+			if watch.Done {
+				return
+			}
+
+			cmd := exec.Command("entr", "-zps", "echo 0")
+			cmd.Stdin = watch.Stdin()
+			cmd.Run()
+
+			changeChan <- true
+		}
+	}()
+}
+
 // Observe file-changes
-func ObserveFileChanges(args *ReplitArgs, tui *TUI, changeChan chan bool) error {
+func ObserveFileChanges(args *ReplitArgs, tui *TUI, changeChan chan bool) (FileWatcher, error) {
 	targetFile := args.EditorFile
 	dpath := args.Dpath
 
@@ -155,64 +186,13 @@ func ObserveFileChanges(args *ReplitArgs, tui *TUI, changeChan chan bool) error 
 		files, err = ListDirectory(dpath)
 
 		if err != nil {
-			return err
+			return FileWatcher{}, err
 		}
 	}
 
-	tgtFileString := []byte(strings.Join(*files, "\n"))
+	watch := FileWatcher{false, files}
 
-	go func() {
-		for {
-			cmd := exec.Command("entr", "-zps", "echo 0")
-			cmd.Stdin = bytes.NewBuffer(tgtFileString)
-			cmd.Run()
-
-			changeChan <- true
-		}
-	}()
-
-	return nil
-}
-
-// Teriminate program when an exit signal is received, and tidy up termporary files and processes
-func ExitHandler(editorChan chan *exec.Cmd, changeChan chan bool, tui *TUI, targetFile *EditorFile) {
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	done := make(chan bool, 1)
-	go func(done chan bool) {
-		<-sigs
-		done <- true
-	}(done)
-
-	<-done
-	tui.done = true
-
-	var doneGroup sync.WaitGroup
-	doneGroup.Add(2)
-
-	// close each channel
-	close(changeChan)
-
-	// kill editor
-	go func() {
-		defer doneGroup.Done()
-
-		editor := <-editorChan
-		editor.Process.Kill()
-	}()
-
-	// remove temporary file
-	go func() {
-		defer doneGroup.Done()
-
-		if targetFile.IsTempFile {
-			name := targetFile.File.Name()
-			os.Remove(name)
-		}
-	}()
-
-	doneGroup.Wait()
-	os.Exit(0)
+	return watch, nil
 }
 
 // Read docopt arguments and return parsed, provided parameters
@@ -297,11 +277,14 @@ func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan ch
 		state.Cmd.Stdout = tui.stdoutViewer
 		state.Cmd.Stderr = tui.stdoutViewer
 
+		cmdStart := time.Now()
 		cmd.Run()
+		cmdDiff := time.Since(cmdStart)
 
-		tui.runCount = tui.runCount + 1
+		tui.UpdateRunTime(cmdDiff)
+		tui.UpdateRunCount()
+
 		tui.app.Draw()
-
 		state.Lock.Unlock()
 	}
 }
@@ -335,10 +318,52 @@ func ReplIt(opts docopt.Opts) int {
 		nil,
 	}
 
-	go ObserveFileChanges(&args, tui, changeChan)
+	fileWatcher, err := ObserveFileChanges(&args, tui, changeChan)
+	if err != nil {
+		panic(err)
+	}
+
+	go fileWatcher.Start(changeChan)
+
 	go RunLanguage(&args, tui, &state, changeChan)
 
-	// Teriminate program when an exit signal is received, and tidy up termporary files and processes
-	ExitHandler(editorChan, changeChan, tui, args.EditorFile)
+	// Terminate program when an exit signal is received, and tidy up termporary files and processes
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	<-sigs
+	close(sigs)
+	close(changeChan)
+
+	var doneGroup sync.WaitGroup
+	doneGroup.Add(2)
+
+	// close each channel
+
+	// kill editor
+	go func() {
+		defer doneGroup.Done()
+
+		editor := <-editorChan
+		editor.Process.Kill()
+		close(editorChan)
+	}()
+
+	// remove temporary file
+	go func() {
+		defer doneGroup.Done()
+
+		targetFile := args.EditorFile
+
+		if targetFile.IsTempFile {
+			name := targetFile.File.Name()
+			os.Remove(name)
+		}
+	}()
+
+	tui.app.Stop()
+	doneGroup.Wait()
+
 	return 0
 }

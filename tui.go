@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -14,7 +15,6 @@ type TUI struct {
 	helpBar          *tview.TextView
 	runCountViewer   *tview.TextView
 	runSecondsViewer *tview.TextView
-	done             bool
 	runCount         int64
 	runTime          int64
 }
@@ -71,23 +71,20 @@ func NewUI(args *ReplitArgs) *TUI {
 	return &tui
 }
 
-// Redraw when file-changes are detected
-func (tui *TUI) Redraw(changeChan chan bool) {
-	for {
-		if tui.done {
-			return
-		}
+func (tui *TUI) UpdateRunCount() {
+	tui.runCount += 1
+	tui.runCountViewer.SetText("run " + fmt.Sprint(tui.runCount) + " times")
+}
 
-		<-changeChan
-		tui.runCount = tui.runCount + 1
-		tui.app.Draw()
-	}
+func (tui *TUI) UpdateRunTime(diff time.Duration) {
+	tui.runTime = diff.Milliseconds()
+	tui.runSecondsViewer.SetText(fmt.Sprint(tui.runTime) + "ms")
 }
 
 // Arrange TUI components into a grid
 func (tui *TUI) Grid() *tview.Grid {
 	return tview.NewGrid().
-		SetBorders(true).
+		SetBorders(false).
 		SetRows(1, 0, 1, 1).
 		SetColumns(0).
 		AddItem(tui.header, ROW_0, COL_0, ROWSPAN_1, COLSPAN_1, MINWIDTH_0, MINHEIGHT_0, true).
