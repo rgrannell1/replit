@@ -135,7 +135,14 @@ func GetEditor() (string, error) {
 // Launch the user's visual-editor, falling back to VSCode as a default.
 func LaunchEditor(editorChan chan<- *exec.Cmd, file *EditorFile) {
 	editor, _ := GetEditor()
-	cmd := exec.Command(editor, file.File.Name())
+	var cmd *exec.Cmd
+
+	if editor == "code" {
+		// having to change line-position is a little irritating
+		cmd = exec.Command(editor, "--goto", file.File.Name()+":2")
+	} else {
+		cmd = exec.Command(editor, file.File.Name())
+	}
 
 	cmd.Start()
 	editorChan <- cmd
