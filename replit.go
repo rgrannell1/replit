@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/docopt/docopt-go"
 	"github.com/rivo/tview"
@@ -132,7 +133,7 @@ func GetEditor() (string, error) {
 }
 
 // Launch the user's visual-editor, falling back to VSCode as a default.
-func LaunchEditor(editorChan chan *exec.Cmd, file *EditorFile) {
+func LaunchEditor(editorChan chan<- *exec.Cmd, file *EditorFile) {
 	editor, _ := GetEditor()
 	cmd := exec.Command(editor, file.File.Name())
 
@@ -140,8 +141,8 @@ func LaunchEditor(editorChan chan *exec.Cmd, file *EditorFile) {
 	editorChan <- cmd
 }
 
-// Start entr
-func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd, changeChan chan bool) error {
+// Observe file-changes
+func ObserveFileChanges(args *ReplitArgs, tui *TUI, changeChan chan bool) error {
 	targetFile := args.EditorFile
 	dpath := args.Dpath
 
@@ -158,29 +159,23 @@ func StartEntr(args *ReplitArgs, tui *TUI, entrChan chan *exec.Cmd, changeChan c
 		}
 	}
 
-	go func(cmdChan chan *exec.Cmd) {
-		go ObserveChanges(changeChan, files)
-		cmdChan <- LaunchEntr(args, tui, files)
-	}(entrChan)
+	tgtFileString := []byte(strings.Join(*files, "\n"))
+
+	go func() {
+		for {
+			cmd := exec.Command("entr", "-zps", "echo 0")
+			cmd.Stdin = bytes.NewBuffer(tgtFileString)
+			cmd.Run()
+
+			changeChan <- true
+		}
+	}()
 
 	return nil
 }
 
-// Send a signal each time a file is changed according to entr.
-func ObserveChanges(changeChan chan bool, files *[]string) {
-	watched := []byte(strings.Join(*files, "\n"))
-
-	for {
-		cmd := exec.Command("entr", "-zps", "echo 0")
-		cmd.Stdin = bytes.NewBuffer(watched)
-		cmd.Run()
-
-		changeChan <- true
-	}
-}
-
 // Teriminate program when an exit signal is received, and tidy up termporary files and processes
-func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, tui *TUI, targetFile *EditorFile) {
+func ExitHandler(editorChan chan *exec.Cmd, changeChan chan bool, tui *TUI, targetFile *EditorFile) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan bool, 1)
@@ -193,15 +188,10 @@ func ExitHandler(entrChan chan *exec.Cmd, editorChan chan *exec.Cmd, tui *TUI, t
 	tui.done = true
 
 	var doneGroup sync.WaitGroup
-	doneGroup.Add(3)
+	doneGroup.Add(2)
 
-	// kill entr command
-	go func() {
-		defer doneGroup.Done()
-
-		entr := <-entrChan
-		entr.Process.Kill()
-	}()
+	// close each channel
+	close(changeChan)
 
 	// kill editor
 	go func() {
@@ -270,6 +260,52 @@ func ReadArgs(opts docopt.Opts) (ReplitArgs, int) {
 	}, -1
 }
 
+type LanguageState struct {
+	Time time.Time
+	Lock sync.Mutex
+	Cmd  *exec.Cmd
+}
+
+func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan chan bool) {
+	for {
+		<-changeChan
+		now := time.Now()
+
+		threshold := time.Second * 2
+		if state.Time.Sub(now) > threshold {
+			// too slow; even though it is running just kill the process and release the lock
+			// so the new content can be run.
+
+			if state.Cmd != nil {
+				state.Cmd.Process.Kill()
+				state.Lock.Unlock()
+			}
+		}
+
+		state.Lock.Lock()
+
+		// clear stdout
+		tui.stdoutViewer.Lock()
+		tui.stdoutViewer.Clear()
+		tui.stdoutViewer.Unlock()
+
+		state.Time = now
+		cmd := exec.Command(args.Lang, args.EditorFile.File.Name())
+		state.Cmd = cmd
+
+		// capture output to a cleared output viewer
+		state.Cmd.Stdout = tui.stdoutViewer
+		state.Cmd.Stderr = tui.stdoutViewer
+
+		cmd.Run()
+
+		tui.runCount = tui.runCount + 1
+		tui.app.Draw()
+
+		state.Lock.Unlock()
+	}
+}
+
 // Core application
 func ReplIt(opts docopt.Opts) int {
 	// read and validate arguments
@@ -291,13 +327,18 @@ func ReplIt(opts docopt.Opts) int {
 	go LaunchEditor(editorChan, args.EditorFile)
 
 	// start entr; read the file (and optionally a directory) and live-reload
-	entrChan := make(chan *exec.Cmd)
 	changeChan := make(chan bool)
 
-	go tui.Redraw(changeChan)
-	go StartEntr(&args, tui, entrChan, changeChan)
+	state := LanguageState{
+		time.Now(),
+		sync.Mutex{},
+		nil,
+	}
+
+	go ObserveFileChanges(&args, tui, changeChan)
+	go RunLanguage(&args, tui, &state, changeChan)
 
 	// Teriminate program when an exit signal is received, and tidy up termporary files and processes
-	ExitHandler(entrChan, editorChan, tui, args.EditorFile)
+	ExitHandler(editorChan, changeChan, tui, args.EditorFile)
 	return 0
 }
