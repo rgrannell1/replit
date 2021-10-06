@@ -276,13 +276,17 @@ func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan ch
 		tui.stdoutViewer.Clear()
 		tui.stdoutViewer.Unlock()
 
+		tui.stderrViewer.Lock()
+		tui.stderrViewer.Clear()
+		tui.stderrViewer.Unlock()
+
 		state.Time = now
 		cmd := exec.Command(args.Lang, args.EditorFile.File.Name())
 		state.Cmd = cmd
 
 		// capture output to a cleared output viewer
 		state.Cmd.Stdout = tui.stdoutViewer
-		state.Cmd.Stderr = tui.stdoutViewer
+		state.Cmd.Stderr = tui.stderrViewer
 
 		cmdStart := time.Now()
 		cmd.Run()

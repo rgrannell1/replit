@@ -34,11 +34,14 @@ const ROW_4 = 4
 const COL_0 = 0
 const COL_1 = 1
 const COL_2 = 2
+const COL_3 = 3
+const COL_4 = 4
 
 const ROWSPAN_1 = 1
 const COLSPAN_1 = 1
 const COLSPAN_2 = 2
 const COLSPAN_3 = 3
+const COLSPAN_4 = 4
 
 const MINHEIGHT_0 = 0
 
@@ -51,3 +54,4 @@ const DONT_FOCUS = false
 const HELP_TEXT = "Help"
 const HEADER_TEXT = "[red]Replit[reset]"
 const STDOUT_TEXT = "Waiting for program execution...\n"
+const STDERR_TEXT = "Nothing sent to STDERR, yet...\n"
