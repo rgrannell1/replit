@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -9,6 +10,7 @@ import (
 )
 
 type TUI struct {
+	actions          *TuiActions
 	header           *tview.TextView
 	app              *tview.Application
 	stdoutViewer     *tview.TextView
@@ -33,9 +35,55 @@ func NewHeader(tui *TUI) *tview.TextView {
 		SetText(HEADER_TEXT)
 }
 
+type TuiActions struct {
+	killProcess *sync.Cond
+	fileChange  *sync.Cond
+}
+
+func NewActions(tui *TUI) *TuiActions {
+	return &TuiActions{
+		killProcess: sync.NewCond(&sync.Mutex{}),
+		fileChange:  sync.NewCond(&sync.Mutex{}),
+	}
+}
+
+// Attach a listener for a sync broadcast
+func attachListener(cd *sync.Cond, listener func()) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		wg.Done()
+		cd.L.Lock()
+		defer cd.L.Unlock()
+
+		cd.Wait()
+		listener()
+
+		go attachListener(cd, listener)
+	}()
+
+	wg.Wait()
+}
+
 // TView application
-func NewApplication() *tview.Application {
-	return tview.NewApplication().EnableMouse(true)
+func NewApplication(tui *TUI) *tview.Application {
+	onInput := func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Rune() == 'k' {
+			tui.actions.killProcess.Broadcast()
+			return nil
+		}
+
+		if event.Key() == tcell.KeyEscape || event.Rune() == 'q' {
+			panic("implement quit")
+		}
+
+		return event
+	}
+
+	return tview.NewApplication().
+		EnableMouse(true).
+		SetInputCapture(onInput)
 }
 
 // Show command output text
@@ -77,7 +125,8 @@ func NewUI(args *ReplitArgs) *TUI {
 	tui := TUI{}
 	tui.SetTheme()
 
-	tui.app = NewApplication()
+	tui.actions = NewActions(&tui)
+	tui.app = NewApplication(&tui)
 	tui.header = NewHeader(&tui)
 	tui.helpBar = NewHelpbar(&tui, args)
 	tui.stdoutViewer = NewStdoutViewer(&tui)

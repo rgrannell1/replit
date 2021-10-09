@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/docopt/docopt-go"
-	"github.com/rivo/tview"
 )
 
 type EditorFile struct {
@@ -56,20 +55,6 @@ func ListDirectory(dir string) (*[]string, error) {
 	})
 
 	return &files, nil
-}
-
-// Launch an entr process and intercept output.
-func LaunchEntr(args *ReplitArgs, tui *TUI, files *[]string) *exec.Cmd {
-	watched := []byte(strings.Join(*files, "\n"))
-
-	cmd := exec.Command("entr", "-c", "-s", args.Lang+" '"+args.EditorFile.File.Name()+"'")
-
-	cmd.Stdin = bytes.NewBuffer(watched)
-	cmd.Stdout = tview.ANSIWriter(tui.stdoutViewer)
-	cmd.Stderr = tview.ANSIWriter(tui.stdoutViewer)
-
-	cmd.Start()
-	return cmd
 }
 
 // Check the requested language
@@ -163,7 +148,7 @@ func (watch *FileWatcher) Stdin() *bytes.Buffer {
 	return bytes.NewBuffer(byteStr)
 }
 
-func (watch *FileWatcher) Start(changeChan chan bool) {
+func (watch *FileWatcher) Start(tui *TUI) {
 	go func() {
 		for {
 			if watch.Done {
@@ -174,13 +159,13 @@ func (watch *FileWatcher) Start(changeChan chan bool) {
 			cmd.Stdin = watch.Stdin()
 			cmd.Run()
 
-			changeChan <- true
+			tui.actions.fileChange.Broadcast()
 		}
 	}()
 }
 
 // Observe file-changes
-func ObserveFileChanges(args *ReplitArgs, tui *TUI, changeChan chan bool) (FileWatcher, error) {
+func ObserveFileChanges(args *ReplitArgs, tui *TUI) (FileWatcher, error) {
 	targetFile := args.EditorFile
 	dpath := args.Dpath
 
@@ -253,9 +238,19 @@ type LanguageState struct {
 	Cmd  *exec.Cmd
 }
 
-func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan chan bool) {
-	for {
-		<-changeChan
+func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState) {
+	var cmd *exec.Cmd
+
+	// kill the running process
+	killProcess := func() {
+		if cmd != nil {
+			cmd.Process.Kill()
+			cmd = nil
+		}
+	}
+
+	// update stdout
+	onFileChange := func() {
 		now := time.Now()
 
 		threshold := time.Second * 2
@@ -263,8 +258,8 @@ func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan ch
 			// too slow; even though it is running just kill the process and release the lock
 			// so the new content can be run.
 
-			if state.Cmd != nil {
-				state.Cmd.Process.Kill()
+			if cmd != nil {
+				cmd.Process.Kill()
 				state.Lock.Unlock()
 			}
 		}
@@ -272,32 +267,39 @@ func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState, changeChan ch
 		state.Lock.Lock()
 
 		// clear stdout
-		tui.stdoutViewer.Lock()
-		tui.stdoutViewer.Clear()
-		tui.stdoutViewer.Unlock()
+		stdoutViewer := tui.stdoutViewer
+		stderrViewer := tui.stderrViewer
 
-		tui.stderrViewer.Lock()
-		tui.stderrViewer.Clear()
-		tui.stderrViewer.Unlock()
+		stdoutViewer.Lock()
+		stdoutViewer.Clear()
+		stdoutViewer.Unlock()
+
+		stderrViewer.Lock()
+		stderrViewer.Clear()
+		stderrViewer.Unlock()
 
 		state.Time = now
-		cmd := exec.Command(args.Lang, args.EditorFile.File.Name())
-		state.Cmd = cmd
+		// call the language against a file
+		cmd = exec.Command(args.Lang, args.EditorFile.File.Name())
+		cmd.Stdout = stdoutViewer
+		cmd.Stderr = stderrViewer
 
-		// capture output to a cleared output viewer
-		state.Cmd.Stdout = tui.stdoutViewer
-		state.Cmd.Stderr = tui.stderrViewer
-
-		cmdStart := time.Now()
+		startCommandTime := time.Now()
 		cmd.Run()
-		cmdDiff := time.Since(cmdStart)
+		commandEnd := time.Since(startCommandTime)
 
-		tui.UpdateRunTime(cmdDiff)
+		tui.UpdateRunTime(commandEnd)
 		tui.UpdateRunCount()
 
 		tui.app.Draw()
 		state.Lock.Unlock()
 	}
+
+	// run on process-kill
+	attachListener(tui.actions.killProcess, killProcess)
+
+	// run on file-change
+	attachListener(tui.actions.fileChange, onFileChange)
 }
 
 // Core application
@@ -309,6 +311,7 @@ func ReplIt(opts docopt.Opts) int {
 	}
 
 	tui := NewUI(&args)
+
 	tui.SetTheme()
 
 	go func(tui *TUI) {
@@ -321,22 +324,20 @@ func ReplIt(opts docopt.Opts) int {
 	go LaunchEditor(editorChan, args.EditorFile)
 
 	// start entr; read the file (and optionally a directory) and live-reload
-	changeChan := make(chan bool)
-
 	state := LanguageState{
 		time.Now(),
 		sync.Mutex{},
 		nil,
 	}
 
-	fileWatcher, err := ObserveFileChanges(&args, tui, changeChan)
+	fileWatcher, err := ObserveFileChanges(&args, tui)
 	if err != nil {
 		panic(err)
 	}
 
-	go fileWatcher.Start(changeChan)
+	go fileWatcher.Start(tui)
 
-	go RunLanguage(&args, tui, &state, changeChan)
+	go RunLanguage(&args, tui, &state)
 
 	// Terminate program when an exit signal is received, and tidy up termporary files and processes
 
@@ -345,7 +346,6 @@ func ReplIt(opts docopt.Opts) int {
 
 	<-sigs
 	close(sigs)
-	close(changeChan)
 
 	var doneGroup sync.WaitGroup
 	doneGroup.Add(2)
