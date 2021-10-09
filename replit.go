@@ -285,12 +285,25 @@ func RunLanguage(args *ReplitArgs, tui *TUI, state *LanguageState) {
 		cmd.Stderr = stderrViewer
 
 		startCommandTime := time.Now()
-		cmd.Run()
-		commandEnd := time.Since(startCommandTime)
+		done := false
 
-		tui.UpdateRunTime(commandEnd)
+		go func() {
+			for {
+				if done {
+					break
+				}
+
+				time.Sleep(time.Millisecond * 25)
+
+				tui.UpdateRunTime(time.Since(startCommandTime))
+				tui.app.Draw()
+			}
+		}()
+
+		cmd.Run()
 		tui.UpdateRunCount()
 
+		done = true
 		tui.app.Draw()
 		state.Lock.Unlock()
 	}
